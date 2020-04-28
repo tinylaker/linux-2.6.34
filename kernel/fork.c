@@ -237,27 +237,27 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 
 	prepare_to_copy(orig);
 
-	tsk = alloc_task_struct();
+	tsk = alloc_task_struct();  //为新进程获取进程描述符
 	if (!tsk)
 		return NULL;
 
-	ti = alloc_thread_info(tsk);
+	ti = alloc_thread_info(tsk);    //申请空闲内存，存放新进程的thread_info和内核栈
 	if (!ti) {
-		free_task_struct(tsk);
+		free_task_struct(tsk);  //申请内存失败，则释放进程描述符tsk
 		return NULL;
 	}
 
- 	err = arch_dup_task_struct(tsk, orig);
+ 	err = arch_dup_task_struct(tsk, orig);  //将当前进程描述符内容复制到tsk所指向的task_struct结构
 	if (err)
 		goto out;
 
-	tsk->stack = ti;
+	tsk->stack = ti;    //void *stack指向thread_info所在的内存栈区域
 
 	err = prop_local_init_single(&tsk->dirties);
 	if (err)
 		goto out;
 
-	setup_thread_stack(tsk, orig);
+	setup_thread_stack(tsk, orig);  //子进程thread_info指向父进程thread_info
 	clear_user_return_notifier(tsk);
 	stackend = end_of_stack(tsk);
 	*stackend = STACK_END_MAGIC;	/* for overflow detection */
@@ -267,7 +267,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 #endif
 
 	/* One for us, one for whoever does the "release_task()" (usually parent) */
-	atomic_set(&tsk->usage,2);
+	atomic_set(&tsk->usage,2);  //表示进程描述符正在被使用，且该进程处于活动状态
 	atomic_set(&tsk->fs_excl, 0);
 #ifdef CONFIG_BLK_DEV_IO_TRACE
 	tsk->btrace_seq = 0;
@@ -307,7 +307,7 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 	mm->cached_hole_size = ~0UL;
 	mm->map_count = 0;
 	cpumask_clear(mm_cpumask(mm));
-	mm->mm_rb = RB_ROOT;
+	mm->mm_rb = RB_ROOT;    //VMA红黑树的根
 	rb_link = &mm->mm_rb.rb_node;
 	rb_parent = NULL;
 	pprev = &mm->mmap;
@@ -315,6 +315,7 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 	if (retval)
 		goto out;
 
+    //遍历父进程的VMA
 	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
 		struct file *file;
 
@@ -332,17 +333,20 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
 				goto fail_nomem;
 			charge = len;
 		}
+        //子进程创建VMA
 		tmp = kmem_cache_alloc(vm_area_cachep, GFP_KERNEL);
 		if (!tmp)
 			goto fail_nomem;
 		*tmp = *mpnt;
+        //avc链表，用在反向映射remap系统中
 		INIT_LIST_HEAD(&tmp->anon_vma_chain);
 		pol = mpol_dup(vma_policy(mpnt));
 		retval = PTR_ERR(pol);
 		if (IS_ERR(pol))
 			goto fail_nomem_policy;
 		vma_set_policy(tmp, pol);
-		if (anon_vma_fork(tmp, mpnt))
+        //创建属于子进程的struct anon_vma实例，并使用avc实现父子进程的VMA链接
+		if (anon_vma_fork(tmp, mpnt))   
 			goto fail_nomem_anon_vma_fork;
 		tmp->vm_flags &= ~VM_LOCKED;
 		tmp->vm_mm = mm;
@@ -458,22 +462,22 @@ static void mm_init_aio(struct mm_struct *mm)
 
 static struct mm_struct * mm_init(struct mm_struct * mm, struct task_struct *p)
 {
-	atomic_set(&mm->mm_users, 1);
-	atomic_set(&mm->mm_count, 1);
-	init_rwsem(&mm->mmap_sem);
+	atomic_set(&mm->mm_users, 1);   //用户空间引用个数
+	atomic_set(&mm->mm_count, 1);   //内核空间引用个数
+	init_rwsem(&mm->mmap_sem);  //保护进程地址空间的读写信号量
 	INIT_LIST_HEAD(&mm->mmlist);
 	mm->flags = (current->mm) ?
 		(current->mm->flags & MMF_INIT_MASK) : default_dump_filter;
 	mm->core_state = NULL;
 	mm->nr_ptes = 0;
 	memset(&mm->rss_stat, 0, sizeof(mm->rss_stat));
-	spin_lock_init(&mm->page_table_lock);
+	spin_lock_init(&mm->page_table_lock);   //保护进程页表的spinlock锁
 	mm->free_area_cache = TASK_UNMAPPED_BASE;
 	mm->cached_hole_size = ~0UL;
 	mm_init_aio(mm);
 	mm_init_owner(mm, p);
 
-	if (likely(!mm_alloc_pgd(mm))) {
+	if (likely(!mm_alloc_pgd(mm))) {    //为进程分配PGD页表
 		mm->def_flags = 0;
 		mmu_notifier_mm_init(mm);
 		return mm;
@@ -706,13 +710,13 @@ static int copy_mm(unsigned long clone_flags, struct task_struct * tsk)
 	 *
 	 * We need to steal a active VM for that..
 	 */
-	oldmm = current->mm;
+	oldmm = current->mm;    //如果当前进程不是线程或内核线程,mm为空
 	if (!oldmm)
 		return 0;
 
-	if (clone_flags & CLONE_VM) {
+	if (clone_flags & CLONE_VM) {   //父子进程共享内存空间
 		atomic_inc(&oldmm->mm_users);
-		mm = oldmm;
+		mm = oldmm; //直接指向父进程的内存空间
 		goto good_mm;
 	}
 
@@ -963,6 +967,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	struct task_struct *p;
 	int cgroup_callbacks_done = 0;
 
+    //CLONE_NEWNS 表示父子进程不共享mount namespace
 	if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
 		return ERR_PTR(-EINVAL);
 
@@ -970,6 +975,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	 * Thread groups must share signals as well, and detached threads
 	 * can only be started up within the thread group.
 	 */
+    //CLONE_THREAD 表示父子进程在同一个线程组中，线程组进程必须共享信号
 	if ((clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_SIGHAND))
 		return ERR_PTR(-EINVAL);
 
@@ -987,11 +993,13 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	 * multi-rooted process trees, prevent global and container-inits
 	 * from creating siblings.
 	 */
+    //CLONE_PARENT 表示新建进程是兄弟进程，它们拥有相同的父进程；
+    //只有init进程会设置SIGNAL_UNKILLABLE，不允许新建进程和init进程同为兄弟进程。
 	if ((clone_flags & CLONE_PARENT) &&
 				current->signal->flags & SIGNAL_UNKILLABLE)
 		return ERR_PTR(-EINVAL);
 
-	retval = security_task_create(clone_flags);
+	retval = security_task_create(clone_flags); //security模块
 	if (retval)
 		goto fork_out;
 
@@ -1009,6 +1017,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 	DEBUG_LOCKS_WARN_ON(!p->softirqs_enabled);
 #endif
 	retval = -EAGAIN;
+    //确定当前用户所拥有的进程数没有超出分配的资源限制
 	if (atomic_read(&p->real_cred->user->processes) >=
 			task_rlimit(p, RLIMIT_NPROC)) {
 		if (!capable(CAP_SYS_ADMIN) && !capable(CAP_SYS_RESOURCE) &&
@@ -1146,7 +1155,7 @@ static struct task_struct *copy_process(unsigned long clone_flags,
 
 	if (pid != &init_struct_pid) {
 		retval = -ENOMEM;
-		pid = alloc_pid(p->nsproxy->pid_ns);
+		pid = alloc_pid(p->nsproxy->pid_ns);    //为新进程分配pid
 		if (!pid)
 			goto bad_fork_cleanup_io;
 
